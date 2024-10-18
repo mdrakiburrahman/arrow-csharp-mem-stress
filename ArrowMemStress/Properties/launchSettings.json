@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "ArrowMemStress": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "NUM_ROWS": "10000000",
+        "NUM_LOOPS": "50",
+        "NUM_THREADS": "1"
+      }
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
