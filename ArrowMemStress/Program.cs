@@ -35,8 +35,12 @@
                 {
                     long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
 
-                    RecordBatch.Builder recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
-                    RecordBatch[] outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
+                    RecordBatch.Builder recordBatchBuilder;
+                    RecordBatch[] outgoingBatches;
+
+                    recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
+                    outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
+
                     long approxSizeInMb = ApproximateMemoryPressureInBytes(outgoingBatches) / 1024 / 1024;
                     
                     // 1. After creating RecordBatch
@@ -64,6 +68,7 @@
 
                     // 3. After disposing RecordBatch
                     foreach (RecordBatch recordBatch in outgoingBatches) recordBatch.Dispose();
+                    recordBatchBuilder.Clear();
                     long memoryAfterDisposeInMb = ProcessMemoryProfiler.ReportInMb();
 
                     // Diffs
@@ -73,7 +78,7 @@
                     long loopStartToEndMemory = memoryAfterDisposeInMb - memoryBeforeRecordBatchCreate;
 
                     StringBuilder sb = new StringBuilder();
-                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, wrote to delta: {writeDelta}, approx. size: {approxSizeInMb:F0} MB, ");
+                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, wrote to delta: {writeDelta}, approx. RecordBatch size: {approxSizeInMb:F0} MB, ");
                     sb.Append($"before RecordBatch create: {memoryBeforeRecordBatchCreate:F0} MB -> ");
                     sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
                     sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
