@@ -4,21 +4,23 @@
     using Apache.Arrow.Memory;
     using Apache.Arrow.Types;
     using DeltaLake.Table;
+    using Microsoft.Data.Analysis;
     using System.Diagnostics;
-    using System.Text;
     using System.Threading;
 
     public class Program
     {
         private const string alphabets = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         private const string stringColumnName = "colStringTest";
-        private const int maxDeltaRetries = 5;
         private static Schema schema = BuildSchema();
         private static readonly SemaphoreSlim deltaTableTransactionLock = new(1, 1);
 
         public static void Main(string[] args)
         {
             long memoryAtAppStart = ProcessMemoryProfiler.ReportInMb();
+            long managedHeapAtAppStart = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
+
+            Console.WriteLine($"[ App Start ] App: {memoryAtAppStart:F0} MB, Managed Heap: {managedHeapAtAppStart:F0} MB");
 
             int numRows = int.Parse(Environment.GetEnvironmentVariable("NUM_ROWS") ?? "10000000");
             int numLoops = int.Parse(Environment.GetEnvironmentVariable("NUM_LOOPS") ?? "100");
@@ -27,10 +29,26 @@
             string storageAccountName = (Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? "someaccount");
             string storageContainerName = (Environment.GetEnvironmentVariable("STORAGE_CONTAINER_NAME") ?? "somecontainer");
             string storageAccountRelativePath = (Environment.GetEnvironmentVariable("STORAGE_TABLE_RELATIVE_PATH") ?? "some/path/table");
-            bool writeDelta = bool.Parse(Environment.GetEnvironmentVariable("WRITE_TO_DELTA") ?? "true");
-            bool noOp = bool.Parse(Environment.GetEnvironmentVariable("NO_OP") ?? "true");
-            Random randomValueGenerator = new ();
 
+            var threadColumn = new PrimitiveDataFrameColumn<int>("Thread #");
+            var loopColumn = new PrimitiveDataFrameColumn<int>("Loop #");
+            var numRowsColumn = new PrimitiveDataFrameColumn<int>("Number of Rows");
+            var memoryBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory Before RecordBatch Create");
+            var managedHeapBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Before RecordBatch Create");
+            var memoryAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Create");
+            var managedHeapAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Create");
+            var memoryAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Memory After Delta Write");
+            var managedHeapAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After Delta Write");
+            var memoryAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Dispose");
+            var managedHeapAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Dispose");
+            var memoryAfterGcColumn = new PrimitiveDataFrameColumn<long>("Memory After GC");
+            var managedHeapAfterGcColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After GC");
+            var appStartToLoopEndMemoryColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End Diff");
+            var appStartToLoopEndManagedHeapColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End Diff");
+            var appStartToLoopEndMemoryPercentColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End %");
+            var appStartToLoopEndManagedHeapPercentColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End %");
+
+            Random randomValueGenerator = new ();
             ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
             NativeMemoryAllocator memoryAllocator = new(alignment: 64);
 
@@ -38,150 +56,122 @@
             {
                 for (int i = 0; i < numLoops; i++)
                 {
+                    Console.WriteLine($"[ Thread {t + 1} of {numThreads} ] Loop {i + 1} of {numLoops}");
+
+                    string[] stringArray = Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)).ToArray();
+
                     long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
-                    RecordBatch.Builder recordBatchBuilder = default;
-                    RecordBatch[] outgoingBatches = default;
-                    long approxRecordBatchSizeInMb = 0;
-
-                    if (!noOp)
-                    {
-                        recordBatchBuilder = new RecordBatch.Builder(memoryAllocator).Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
-                        outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
-                        approxRecordBatchSizeInMb = ApproximateMemoryPressureInBytes(outgoingBatches) / 1024 / 1024;
-                    }
+                    RecordBatch.Builder recordBatchBuilder = new RecordBatch.Builder(memoryAllocator).Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(stringArray)));
+                    RecordBatch[] outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
 
                     // 1. After creating RecordBatch
                     long memoryAfterRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterRecordBatchCreate = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
                     // 2. After Delta Write
                     deltaTableTransactionLock.Wait();
                     try
                     {
-                        if (writeDelta && !noOp)
-                        {
-                            threadSafeDeltaTableClient.GetDeltaTableClient().InsertAsync(
-                                outgoingBatches,
-                                schema,
-                                new InsertOptions { SaveMode = SaveMode.Append },
-                                default
-                            ).GetAwaiter().GetResult();
-                        }
+                        threadSafeDeltaTableClient.GetDeltaTableClient().InsertAsync(
+                            outgoingBatches,
+                            schema,
+                            new InsertOptions { SaveMode = SaveMode.Append },
+                            default
+                        ).GetAwaiter().GetResult();
                     }
                     finally
                     {
                         deltaTableTransactionLock.Release();
                     }
                     long memoryAfterDeltaWrite = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterDeltaWrite = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
-                    // 3. After disposing RecordBatch
-                    if (!noOp)
-                    {
-                        foreach (RecordBatch recordBatch in outgoingBatches) recordBatch.Dispose();
-                        recordBatchBuilder.Clear();
-                    }
-                    long memoryAfterDisposeInMb = ProcessMemoryProfiler.ReportInMb();
+                    // 2. After disposing RecordBatch
+                    foreach (RecordBatch recordBatch in outgoingBatches) recordBatch.Dispose();
+                    recordBatchBuilder.Clear();
+                    stringArray = null;
+
+                    long memoryAfterRecordBatchDispose = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterRecordBatchDispose = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
+
+                    // 3. After forcing GC
+                    GC.Collect(generation: GC.MaxGeneration, mode: GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
+                    long memoryAfterGc = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterGc = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
                     // Diffs
                     long memoryRecordBatchActual = memoryAfterRecordBatchCreate - memoryBeforeRecordBatchCreate;
-                    long deltaWriteMemory = memoryAfterDeltaWrite - memoryAfterRecordBatchCreate;
-                    long disposedMemoryInMb = memoryAfterDisposeInMb - memoryAfterDeltaWrite;
-                    long loopStartToEndMemory = memoryAfterDisposeInMb - memoryAtAppStart;
+                    long managedHeapRecordBatchActual = managedHeapAfterRecordBatchCreate - managedHeapBeforeRecordBatchCreate;
 
-                    StringBuilder sb = new StringBuilder();
-                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, no op run: {noOp}, wrote to delta: {writeDelta}, approx. RecordBatch size: {approxRecordBatchSizeInMb:F0} MB, ");
-                    sb.Append($"number of allocations: {memoryAllocator.Statistics.Allocations} -> ");
-                    sb.Append($"allocations in MB: {(memoryAllocator.Statistics.BytesAllocated / 1024 / 1024):F0} MB -> ");
-                    sb.Append($"before RecordBatch create: {memoryBeforeRecordBatchCreate:F0} MB -> ");
-                    sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
-                    sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
-                    sb.Append($"after RecordBatch dispose: {memoryAfterDisposeInMb:F0} (^{disposedMemoryInMb:F0} MB) -> ");
-                    sb.Append($"loop {i + 1} start to end diff: START: {memoryAtAppStart:F0} MB - END: {memoryAfterDisposeInMb:F0} MB (^{loopStartToEndMemory:F0} MB)");
-                    Console.WriteLine(sb);
+                    long disposedMemoryInMb = memoryAfterRecordBatchDispose - memoryAfterRecordBatchCreate;
+                    long disposedManagedHeapInMb = managedHeapAfterRecordBatchDispose - managedHeapAfterRecordBatchCreate;
+
+                    long memorySavedAfterGc = memoryAfterGc - memoryAfterRecordBatchDispose;
+                    long managedHeapSavedAfterGc = managedHeapAfterRecordBatchDispose - managedHeapAfterGc;
+
+                    long appStartToLoopEndMemory = memoryAfterGc - memoryBeforeRecordBatchCreate;
+                    long appStartToLoopEndManagedHeap = managedHeapAfterGc - managedHeapBeforeRecordBatchCreate;
+
+                    long appStartToLoopEndMemoryPercentageGrowth = (appStartToLoopEndMemory * 100 / memoryBeforeRecordBatchCreate);
+                    long appStartToLoopEndManagedHeapPercentageGrowth = (appStartToLoopEndManagedHeap * 100 / managedHeapBeforeRecordBatchCreate);
+
+                    long appStartToLoopEndNativeHeapGrowth = appStartToLoopEndMemory - appStartToLoopEndManagedHeap;
+
+                    lock (threadColumn)
+                    {
+                        threadColumn.Append(t + 1);
+                        loopColumn.Append(i + 1);
+                        numRowsColumn.Append(numRows);
+                        memoryBeforeRecordBatchCreateColumn.Append(memoryBeforeRecordBatchCreate);
+                        managedHeapBeforeRecordBatchCreateColumn.Append(managedHeapBeforeRecordBatchCreate);
+                        memoryAfterRecordBatchCreateColumn.Append(memoryAfterRecordBatchCreate);
+                        managedHeapAfterRecordBatchCreateColumn.Append(managedHeapAfterRecordBatchCreate);
+                        memoryAfterDeltaWriteColumn.Append(memoryAfterDeltaWrite);
+                        managedHeapAfterDeltaWriteColumn.Append(managedHeapAfterDeltaWrite);
+                        memoryAfterRecordBatchDisposeColumn.Append(memoryAfterRecordBatchDispose);
+                        managedHeapAfterRecordBatchDisposeColumn.Append(managedHeapAfterRecordBatchDispose);
+                        memoryAfterGcColumn.Append(memoryAfterGc);
+                        managedHeapAfterGcColumn.Append(managedHeapAfterGc);
+                        appStartToLoopEndMemoryColumn.Append(appStartToLoopEndMemory);
+                        appStartToLoopEndManagedHeapColumn.Append(appStartToLoopEndManagedHeap);
+                        appStartToLoopEndMemoryPercentColumn.Append(appStartToLoopEndMemoryPercentageGrowth);
+                        appStartToLoopEndManagedHeapPercentColumn.Append(appStartToLoopEndManagedHeapPercentageGrowth);
+                    }
                 }
             });
+
+            var dataFrame = new DataFrame(
+                threadColumn,
+                loopColumn,
+                numRowsColumn,
+                memoryBeforeRecordBatchCreateColumn,
+                managedHeapBeforeRecordBatchCreateColumn,
+                memoryAfterRecordBatchCreateColumn,
+                managedHeapAfterRecordBatchCreateColumn,
+                memoryAfterDeltaWriteColumn,
+                managedHeapAfterDeltaWriteColumn,
+                memoryAfterRecordBatchDisposeColumn,
+                managedHeapAfterRecordBatchDisposeColumn,
+                memoryAfterGcColumn,
+                managedHeapAfterGcColumn,
+                appStartToLoopEndMemoryColumn,
+                appStartToLoopEndManagedHeapColumn,
+                appStartToLoopEndMemoryPercentColumn,
+                appStartToLoopEndManagedHeapPercentColumn
+            );
+            Console.WriteLine(dataFrame.ToMarkdown());
         }
 
         private static class ProcessMemoryProfiler
         {
             internal static long ReportInMb() => Process.GetCurrentProcess().WorkingSet64 / 1024 / 1024;
-        }
-
-        private static long ApproximateMemoryPressureInBytes(IReadOnlyCollection<RecordBatch> recordBatches)
-        {
-            long totalMemoryPressure = 0;
-
-            foreach (var recordBatch in recordBatches)
-            {
-                foreach (var column in recordBatch.Arrays)
-                {
-                    totalMemoryPressure += ApproximateColumnMemoryPressureInBytes(column);
-                }
-            }
-
-            return totalMemoryPressure;
+            internal static long ReportManagedHeapLiveObjectsInMb() => GC.GetTotalMemory(false) / 1024 / 1024;
         }
 
         private static string GenerateRandomString(Random random, int length = 10) => new string(Enumerable.Repeat(alphabets, length).Select(s => s[random.Next(s.Length)]).ToArray());
-
-        private static long ApproximateBatchMemoryPressureInBytes(IEnumerable<IArrowArray> columns)
-        {
-            long memoryPressure = 0;
-            foreach (var column in columns)
-            {
-                memoryPressure += ApproximateColumnMemoryPressureInBytes(column);
-            }
-            return memoryPressure;
-        }
-
-        private static long ApproximateColumnMemoryPressureInBytes(IArrowArray column)
-        {
-            long memoryPressure = 0;
-
-            switch (column)
-            {
-                case Int8Array int8Array:
-                    memoryPressure += int8Array.Length * sizeof(sbyte);
-                    break;
-                case Int16Array int16Array:
-                    memoryPressure += int16Array.Length * sizeof(short);
-                    break;
-                case Int32Array int32Array:
-                    memoryPressure += int32Array.Length * sizeof(int);
-                    break;
-                case Int64Array int64Array:
-                    memoryPressure += int64Array.Length * sizeof(long);
-                    break;
-                case FloatArray floatArray:
-                    memoryPressure += floatArray.Length * sizeof(float);
-                    break;
-                case DoubleArray doubleArray:
-                    memoryPressure += doubleArray.Length * sizeof(double);
-                    break;
-                case StringArray stringArray:
-                    foreach (var str in (IEnumerable<string>)stringArray)
-                    {
-                        if (str != null)
-                        {
-                            memoryPressure += str.Length * sizeof(char);
-                        }
-                    }
-                    break;
-                case BinaryArray binaryArray:
-                    foreach (var binary in (IEnumerable<byte[]>)binaryArray)
-                    {
-                        if (binary != null)
-                        {
-                            memoryPressure += binary.Length;
-                        }
-                    }
-                    break;
-                default:
-                    throw new NotImplementedException($"Memory pressure calculation for {column.GetType().Name} is not implemented.");
-            }
-
-            return memoryPressure;
-        }
 
         private static Schema BuildSchema()
         {
