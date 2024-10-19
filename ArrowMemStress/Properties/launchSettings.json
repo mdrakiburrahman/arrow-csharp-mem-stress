@@ -3,12 +3,14 @@
     "ArrowMemStress": {
       "commandName": "Project",
       "environmentVariables": {
-        "NUM_ROWS": "10000000",
+        "NUM_ROWS": "5000000",
         "NUM_LOOPS": "50",
         "NUM_THREADS": "1",
+        "NUM_CHARS_IN_WRITTEN_COLUMN": "30",
         "STORAGE_ACCOUNT_NAME": "monitoringtestadls",
         "STORAGE_CONTAINER_NAME": "onelake",
-        "STORAGE_TABLE_RELATIVE_PATH": "synapse/workspaces/monitoring-test-synapse/temp/demo-table-mem-stress"
+        "STORAGE_TABLE_RELATIVE_PATH": "synapse/workspaces/monitoring-test-synapse/temp/demo-table-mem-stress",
+        "WRITE_TO_DELTA": "true"
       }
     },
     "Container (Dockerfile)": {

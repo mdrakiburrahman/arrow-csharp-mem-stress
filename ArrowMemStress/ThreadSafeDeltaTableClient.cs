@@ -68,7 +68,7 @@
                 if (this.deltaTableClient != null)
                     return this.deltaTableClient;
 
-                Console.WriteLine($"Delta Table Client for does not exist or is near expiry, creating new Delta Table client.");
+                Console.WriteLine($"Delta Table Client for does not exist, creating new Delta Table client.");
                 try
                 {
                     if (!this.DoesDeltaTableExist())

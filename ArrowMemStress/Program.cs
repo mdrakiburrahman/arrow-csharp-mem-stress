@@ -3,12 +3,8 @@
     using Apache.Arrow;
     using Apache.Arrow.Types;
     using DeltaLake.Table;
-    using Polly;
-    using Polly.Retry;
     using System.Diagnostics;
-    using System.Diagnostics.Tracing;
     using System.Text;
-    using System.Text.RegularExpressions;
     using System.Threading;
 
     public class Program
@@ -24,10 +20,13 @@
             int numRows = int.Parse(Environment.GetEnvironmentVariable("NUM_ROWS") ?? "10000000");
             int numLoops = int.Parse(Environment.GetEnvironmentVariable("NUM_LOOPS") ?? "100");
             int numThreads = int.Parse(Environment.GetEnvironmentVariable("NUM_THREADS") ?? "1");
+            int stringLength = int.Parse(Environment.GetEnvironmentVariable("NUM_CHARS_IN_WRITTEN_COLUMN") ?? "10");
             string storageAccountName = (Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? "someaccount");
             string storageContainerName = (Environment.GetEnvironmentVariable("STORAGE_CONTAINER_NAME") ?? "somecontainer");
             string storageAccountRelativePath = (Environment.GetEnvironmentVariable("STORAGE_TABLE_RELATIVE_PATH") ?? "some/path/table");
-            
+            bool writeDelta = bool.Parse(Environment.GetEnvironmentVariable("WRITE_DELTA") ?? "true");
+            Random randomValueGenerator = new ();
+
             ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
             
             Parallel.For(0, numThreads, t =>
@@ -36,7 +35,7 @@
                 {
                     long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
 
-                    RecordBatch.Builder recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => alphabets))));
+                    RecordBatch.Builder recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
                     RecordBatch[] outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
                     long approxSizeInMb = ApproximateMemoryPressureInBytes(outgoingBatches) / 1024 / 1024;
                     
@@ -47,12 +46,15 @@
                     deltaTableTransactionLock.Wait();
                     try
                     {
-                        threadSafeDeltaTableClient.GetDeltaTableClient().InsertAsync(
-                            outgoingBatches,
-                            schema,
-                            new InsertOptions { SaveMode = SaveMode.Append },
-                            default
-                        ).GetAwaiter().GetResult();
+                        if (writeDelta)
+                        {
+                            threadSafeDeltaTableClient.GetDeltaTableClient().InsertAsync(
+                                outgoingBatches,
+                                schema,
+                                new InsertOptions { SaveMode = SaveMode.Append },
+                                default
+                            ).GetAwaiter().GetResult();
+                        }
                     }
                     finally
                     {
@@ -71,7 +73,7 @@
                     long loopStartToEndMemory = memoryAfterDisposeInMb - memoryBeforeRecordBatchCreate;
 
                     StringBuilder sb = new StringBuilder();
-                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, approx. size: {approxSizeInMb:F0} MB, ");
+                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, wrote to delta: {writeDelta}, approx. size: {approxSizeInMb:F0} MB, ");
                     sb.Append($"before RecordBatch create: {memoryBeforeRecordBatchCreate:F0} MB -> ");
                     sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
                     sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
@@ -101,6 +103,8 @@
 
             return totalMemoryPressure;
         }
+
+        private static string GenerateRandomString(Random random, int length = 10) => new string(Enumerable.Repeat(alphabets, length).Select(s => s[random.Next(s.Length)]).ToArray());
 
         private static long ApproximateBatchMemoryPressureInBytes(IEnumerable<IArrowArray> columns)
         {
