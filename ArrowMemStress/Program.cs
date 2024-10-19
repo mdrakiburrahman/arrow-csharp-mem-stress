@@ -17,6 +17,8 @@
 
         public static void Main(string[] args)
         {
+            long memoryAtAppStart = ProcessMemoryProfiler.ReportInMb();
+
             int numRows = int.Parse(Environment.GetEnvironmentVariable("NUM_ROWS") ?? "10000000");
             int numLoops = int.Parse(Environment.GetEnvironmentVariable("NUM_LOOPS") ?? "100");
             int numThreads = int.Parse(Environment.GetEnvironmentVariable("NUM_THREADS") ?? "1");
@@ -82,7 +84,7 @@
                     long memoryRecordBatchActual = memoryAfterRecordBatchCreate - memoryBeforeRecordBatchCreate;
                     long deltaWriteMemory = memoryAfterDeltaWrite - memoryAfterRecordBatchCreate;
                     long disposedMemoryInMb = memoryAfterDisposeInMb - memoryAfterDeltaWrite;
-                    long loopStartToEndMemory = memoryAfterDisposeInMb - memoryBeforeRecordBatchCreate;
+                    long loopStartToEndMemory = memoryAfterDisposeInMb - memoryAtAppStart;
 
                     StringBuilder sb = new StringBuilder();
                     sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, no op run: {noOp}, wrote to delta: {writeDelta}, approx. RecordBatch size: {approxRecordBatchSizeInMb:F0} MB, ");
@@ -90,7 +92,7 @@
                     sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
                     sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
                     sb.Append($"after RecordBatch dispose: {memoryAfterDisposeInMb:F0} (^{disposedMemoryInMb:F0} MB) -> ");
-                    sb.Append($"loop {i + 1} start to end diff: START: {memoryBeforeRecordBatchCreate:F0} MB - END: {memoryAfterDisposeInMb:F0} MB (^{loopStartToEndMemory:F0} MB)");
+                    sb.Append($"loop {i + 1} start to end diff: START: {memoryAtAppStart:F0} MB - END: {memoryAfterDisposeInMb:F0} MB (^{loopStartToEndMemory:F0} MB)");
                     Console.WriteLine(sb);
                 }
             });
