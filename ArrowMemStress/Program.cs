@@ -39,6 +39,7 @@
                     RecordBatch.Builder recordBatchBuilder = default;
                     RecordBatch[] outgoingBatches = default;
                     long approxRecordBatchSizeInMb = 0;
+
                     if (!noOp)
                     {
                         recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
