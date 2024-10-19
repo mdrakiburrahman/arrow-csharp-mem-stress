@@ -1,6 +1,7 @@
 ﻿namespace ArrowMemStress
 {
     using Apache.Arrow;
+    using Apache.Arrow.Memory;
     using Apache.Arrow.Types;
     using DeltaLake.Table;
     using System.Diagnostics;
@@ -31,7 +32,8 @@
             Random randomValueGenerator = new ();
 
             ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
-            
+            NativeMemoryAllocator memoryAllocator = new(alignment: 64);
+
             Parallel.For(0, numThreads, t =>
             {
                 for (int i = 0; i < numLoops; i++)
@@ -44,7 +46,7 @@
 
                     if (!noOp)
                     {
-                        recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
+                        recordBatchBuilder = new RecordBatch.Builder(memoryAllocator).Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)))));
                         outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
                         approxRecordBatchSizeInMb = ApproximateMemoryPressureInBytes(outgoingBatches) / 1024 / 1024;
                     }
@@ -88,6 +90,8 @@
 
                     StringBuilder sb = new StringBuilder();
                     sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, no op run: {noOp}, wrote to delta: {writeDelta}, approx. RecordBatch size: {approxRecordBatchSizeInMb:F0} MB, ");
+                    sb.Append($"number of allocations: {memoryAllocator.Statistics.Allocations} -> ");
+                    sb.Append($"allocations in MB: {(memoryAllocator.Statistics.BytesAllocated / 1024 / 1024):F0} MB -> ");
                     sb.Append($"before RecordBatch create: {memoryBeforeRecordBatchCreate:F0} MB -> ");
                     sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
                     sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
