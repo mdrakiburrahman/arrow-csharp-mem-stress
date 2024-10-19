@@ -2,38 +2,82 @@
 {
     using Apache.Arrow;
     using Apache.Arrow.Types;
+    using DeltaLake.Table;
+    using Polly;
+    using Polly.Retry;
     using System.Diagnostics;
+    using System.Diagnostics.Tracing;
     using System.Text;
+    using System.Text.RegularExpressions;
+    using System.Threading;
 
     public class Program
     {
         private const string alphabets = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         private const string stringColumnName = "colStringTest";
+        private const int maxDeltaRetries = 5;
+        private static Schema schema = BuildSchema();
+        private static readonly SemaphoreSlim deltaTableTransactionLock = new(1, 1);
 
         public static void Main(string[] args)
         {
             int numRows = int.Parse(Environment.GetEnvironmentVariable("NUM_ROWS") ?? "10000000");
             int numLoops = int.Parse(Environment.GetEnvironmentVariable("NUM_LOOPS") ?? "100");
             int numThreads = int.Parse(Environment.GetEnvironmentVariable("NUM_THREADS") ?? "1");
-
+            string storageAccountName = (Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? "someaccount");
+            string storageContainerName = (Environment.GetEnvironmentVariable("STORAGE_CONTAINER_NAME") ?? "somecontainer");
+            string storageAccountRelativePath = (Environment.GetEnvironmentVariable("STORAGE_TABLE_RELATIVE_PATH") ?? "some/path/table");
+            
+            ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
+            
             Parallel.For(0, numThreads, t =>
             {
                 for (int i = 0; i < numLoops; i++)
                 {
+                    long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
+
                     RecordBatch.Builder recordBatchBuilder = new RecordBatch.Builder().Append(stringColumnName, false, col => col.String(arr => arr.AppendRange(Enumerable.Range(0, numRows).Select(_ => alphabets))));
-                    RecordBatch recordBatch = recordBatchBuilder.Build();
-                    long approxSizeInMb = ApproximateBatchMemoryPressureInBytes(recordBatch.Arrays) / 1024 / 1024;
+                    RecordBatch[] outgoingBatches = new RecordBatch[] { recordBatchBuilder.Build() };
+                    long approxSizeInMb = ApproximateMemoryPressureInBytes(outgoingBatches) / 1024 / 1024;
                     
-                    // 1. Before disposing
-                    long memoryBeforeDisposeInMb = ProcessMemoryProfiler.ReportInMb();
+                    // 1. After creating RecordBatch
+                    long memoryAfterRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
 
-                    recordBatch.Dispose();
-                    
-                    // 2. After disposing
+                    // 2. After Delta Write
+                    deltaTableTransactionLock.Wait();
+                    try
+                    {
+                        threadSafeDeltaTableClient.GetDeltaTableClient().InsertAsync(
+                            outgoingBatches,
+                            schema,
+                            new InsertOptions { SaveMode = SaveMode.Append },
+                            default
+                        ).GetAwaiter().GetResult();
+                    }
+                    finally
+                    {
+                        deltaTableTransactionLock.Release();
+                    }
+                    long memoryAfterDeltaWrite = ProcessMemoryProfiler.ReportInMb();
+
+                    // 3. After disposing RecordBatch
+                    foreach (RecordBatch recordBatch in outgoingBatches) recordBatch.Dispose();
                     long memoryAfterDisposeInMb = ProcessMemoryProfiler.ReportInMb();
-                    long memoryReleasedAfterDisposeInMb = memoryBeforeDisposeInMb - memoryAfterDisposeInMb;
 
-                    Console.WriteLine($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {recordBatch.Length} rows, approx. size: {approxSizeInMb:F0} MB, before dispose -> after dispose: [{memoryBeforeDisposeInMb} MB -> {memoryAfterDisposeInMb} MB, diff: {memoryReleasedAfterDisposeInMb} MB]");
+                    // Diffs
+                    long memoryRecordBatchActual = memoryAfterRecordBatchCreate - memoryBeforeRecordBatchCreate;
+                    long deltaWriteMemory = memoryAfterDeltaWrite - memoryAfterRecordBatchCreate;
+                    long disposedMemoryInMb = memoryAfterDisposeInMb - memoryAfterDeltaWrite;
+                    long loopStartToEndMemory = memoryAfterDisposeInMb - memoryBeforeRecordBatchCreate;
+
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, approx. size: {approxSizeInMb:F0} MB, ");
+                    sb.Append($"before RecordBatch create: {memoryBeforeRecordBatchCreate:F0} MB -> ");
+                    sb.Append($"after RecordBatch create: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB) -> ");
+                    sb.Append($"after Delta write: {memoryAfterDeltaWrite:F0} MB (^{deltaWriteMemory:F0} MB) -> ");
+                    sb.Append($"after RecordBatch dispose: {memoryAfterDisposeInMb:F0} (^{disposedMemoryInMb:F0} MB) -> ");
+                    sb.Append($"loop {i + 1} start to end diff: START: {memoryBeforeRecordBatchCreate:F0} MB - END: {memoryAfterDisposeInMb:F0} MB (^{loopStartToEndMemory:F0} MB)");
+                    Console.WriteLine(sb);
                 }
             });
         }
@@ -41,6 +85,21 @@
         private static class ProcessMemoryProfiler
         {
             internal static long ReportInMb() => Process.GetCurrentProcess().WorkingSet64 / 1024 / 1024;
+        }
+
+        private static long ApproximateMemoryPressureInBytes(IReadOnlyCollection<RecordBatch> recordBatches)
+        {
+            long totalMemoryPressure = 0;
+
+            foreach (var recordBatch in recordBatches)
+            {
+                foreach (var column in recordBatch.Arrays)
+                {
+                    totalMemoryPressure += ApproximateColumnMemoryPressureInBytes(column);
+                }
+            }
+
+            return totalMemoryPressure;
         }
 
         private static long ApproximateBatchMemoryPressureInBytes(IEnumerable<IArrowArray> columns)
@@ -100,6 +159,13 @@
             }
 
             return memoryPressure;
+        }
+
+        private static Schema BuildSchema()
+        {
+            var builder = new Apache.Arrow.Schema.Builder();
+            builder = builder.Field(fb => { fb.Name(stringColumnName); fb.DataType(StringType.Default); fb.Nullable(false); });
+            return builder.Build();
         }
     }
 }

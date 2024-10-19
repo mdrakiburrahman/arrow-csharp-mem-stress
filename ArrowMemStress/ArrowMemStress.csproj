@@ -11,7 +11,11 @@
 
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" Version="15.0.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.22.2" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />
+    <PackageReference Include="DeltaLake.Net" Version="0.1.0" />
+    <PackageReference Include="Azure.Identity" Version="1.12.1" />
+    <PackageReference Include="Polly" Version="8.4.2" />
   </ItemGroup>
 
 </Project>

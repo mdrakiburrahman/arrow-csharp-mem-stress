@@ -5,7 +5,10 @@
       "environmentVariables": {
         "NUM_ROWS": "10000000",
         "NUM_LOOPS": "50",
-        "NUM_THREADS": "1"
+        "NUM_THREADS": "1",
+        "STORAGE_ACCOUNT_NAME": "monitoringtestadls",
+        "STORAGE_CONTAINER_NAME": "onelake",
+        "STORAGE_TABLE_RELATIVE_PATH": "synapse/workspaces/monitoring-test-synapse/temp/demo-table-mem-stress"
       }
     },
     "Container (Dockerfile)": {
