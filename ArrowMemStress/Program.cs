@@ -2,6 +2,7 @@
 {
     using Apache.Arrow;
     using Apache.Arrow.Memory;
+    using Microsoft.Data.Analysis;
     using System.Diagnostics;
     using System.Text;
 
@@ -22,6 +23,22 @@
             int numThreads = int.Parse(Environment.GetEnvironmentVariable("NUM_THREADS") ?? "1");
             int stringLength = int.Parse(Environment.GetEnvironmentVariable("NUM_CHARS_IN_WRITTEN_COLUMN") ?? "10");
 
+            var threadColumn = new PrimitiveDataFrameColumn<int>("Thread #");
+            var loopColumn = new PrimitiveDataFrameColumn<int>("Loop #");
+            var numRowsColumn = new PrimitiveDataFrameColumn<int>("Number of Rows");
+            var memoryBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory Before RecordBatch Create");
+            var managedHeapBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Before RecordBatch Create");
+            var memoryAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Create");
+            var managedHeapAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Create");
+            var memoryAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Dispose");
+            var managedHeapAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Dispose");
+            var memoryAfterGcColumn = new PrimitiveDataFrameColumn<long>("Memory After GC");
+            var managedHeapAfterGcColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After GC");
+            var appStartToLoopEndMemoryColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End Diff");
+            var appStartToLoopEndManagedHeapColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End Diff");
+            var appStartToLoopEndMemoryPercentColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End %");
+            var appStartToLoopEndManagedHeapPercentColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End %");
+
             Random randomValueGenerator = new ();
             NativeMemoryAllocator memoryAllocator = new(alignment: 64);
 
@@ -29,6 +46,8 @@
             {
                 for (int i = 0; i < numLoops; i++)
                 {
+                    Console.WriteLine($"[ Thread {t + 1} of {numThreads} ] Loop {i + 1} of {numLoops}");
+
                     string[] stringArray = Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)).ToArray();
 
                     long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
@@ -46,47 +65,72 @@
                     recordBatchBuilder.Clear();
                     stringArray = null;
 
-                    long memoryAfterDisposeInMb = ProcessMemoryProfiler.ReportInMb();
-                    long managedHeapAfterDisposeInMb = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
+                    long memoryAfterRecordBatchDispose = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterRecordBatchDispose = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
                     // 3. After forcing GC
                     GC.Collect(generation: GC.MaxGeneration, mode: GCCollectionMode.Aggressive, blocking: true, compacting: true);
 
-                    long memoryAfterGcInMb = ProcessMemoryProfiler.ReportInMb();
-                    long managedHeapAfterGcInMb = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
+                    long memoryAfterGc = ProcessMemoryProfiler.ReportInMb();
+                    long managedHeapAfterGc = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
                     // Diffs
                     long memoryRecordBatchActual = memoryAfterRecordBatchCreate - memoryBeforeRecordBatchCreate;
                     long managedHeapRecordBatchActual = managedHeapAfterRecordBatchCreate - managedHeapBeforeRecordBatchCreate;
 
-                    long disposedMemoryInMb = memoryAfterDisposeInMb - memoryAfterRecordBatchCreate;
-                    long disposedManagedHeapInMb = managedHeapAfterDisposeInMb - managedHeapAfterRecordBatchCreate;
+                    long disposedMemoryInMb = memoryAfterRecordBatchDispose - memoryAfterRecordBatchCreate;
+                    long disposedManagedHeapInMb = managedHeapAfterRecordBatchDispose - managedHeapAfterRecordBatchCreate;
 
-                    long memorySavedAfterGc = memoryAfterGcInMb - memoryAfterDisposeInMb;
-                    long managedHeapSavedAfterGc = managedHeapAfterDisposeInMb - managedHeapAfterGcInMb;
+                    long memorySavedAfterGc = memoryAfterGc - memoryAfterRecordBatchDispose;
+                    long managedHeapSavedAfterGc = managedHeapAfterRecordBatchDispose - managedHeapAfterGc;
 
-                    long appStartToLoopEndMemory = memoryAfterGcInMb - memoryBeforeRecordBatchCreate;
-                    long appStartToLoopEndManagedHeap = managedHeapAfterGcInMb - managedHeapBeforeRecordBatchCreate;
+                    long appStartToLoopEndMemory = memoryAfterGc - memoryBeforeRecordBatchCreate;
+                    long appStartToLoopEndManagedHeap = managedHeapAfterGc - managedHeapBeforeRecordBatchCreate;
 
                     long appStartToLoopEndMemoryPercentageGrowth = (appStartToLoopEndMemory * 100 / memoryBeforeRecordBatchCreate);
                     long appStartToLoopEndManagedHeapPercentageGrowth = (appStartToLoopEndManagedHeap * 100 / managedHeapBeforeRecordBatchCreate);
 
                     long appStartToLoopEndNativeHeapGrowth = appStartToLoopEndMemory - appStartToLoopEndManagedHeap;
 
-                    StringBuilder sb = new StringBuilder();
-                    sb.Append($"[ Threads: {t + 1}/{numThreads}, Loops: {i + 1} of {numLoops} ] {numRows} rows, ");
-                    sb.Append($"before RecordBatch create - App: {memoryBeforeRecordBatchCreate:F0} MB, Managed Heap: {managedHeapBeforeRecordBatchCreate} MB -> ");
-                    sb.Append($"after RecordBatch create - App: {memoryAfterRecordBatchCreate:F0} MB (^{memoryRecordBatchActual:F0} MB), Managed Heap: {managedHeapAfterRecordBatchCreate} MB (^{managedHeapRecordBatchActual:F0} MB) -> ");
-                    sb.Append($"after RecordBatch dispose - App: {memoryAfterDisposeInMb:F0} MB (^{disposedMemoryInMb:F0} MB), Managed Heap: {managedHeapAfterDisposeInMb} MB (^{disposedManagedHeapInMb:F0} MB) -> ");
-                    sb.Append($"after GC - App: {memoryAfterGcInMb:F0} MB (^{memorySavedAfterGc:F0} MB), Managed Heap: {managedHeapAfterGcInMb} MB (^{managedHeapSavedAfterGc:F0} MB) -> ");
-                    sb.Append($"final App memory diff - Start: {memoryBeforeRecordBatchCreate:F0} MB, End: {memoryAfterGcInMb:F0} MB -> ");
-                    sb.Append($"(^{appStartToLoopEndMemory:F0} MB OR ^{appStartToLoopEndMemoryPercentageGrowth:F0} %) ");
-                    sb.Append($"final managed heap diff - Start: {memoryBeforeRecordBatchCreate:F0} MB, End: {managedHeapAfterGcInMb:F0} MB -> ");
-                    sb.Append($"(^{appStartToLoopEndManagedHeap:F0} MB OR ^{appStartToLoopEndManagedHeapPercentageGrowth:F0} %) -> ");
-                    sb.Append($"final native heap diff: {appStartToLoopEndNativeHeapGrowth:F0} MB");
-                    Console.WriteLine(sb);
+                    lock (threadColumn)
+                    {
+                        threadColumn.Append(t + 1);
+                        loopColumn.Append(i + 1);
+                        numRowsColumn.Append(numRows);
+                        memoryBeforeRecordBatchCreateColumn.Append(memoryBeforeRecordBatchCreate);
+                        managedHeapBeforeRecordBatchCreateColumn.Append(managedHeapBeforeRecordBatchCreate);
+                        memoryAfterRecordBatchCreateColumn.Append(memoryAfterRecordBatchCreate);
+                        managedHeapAfterRecordBatchCreateColumn.Append(managedHeapAfterRecordBatchCreate);
+                        memoryAfterRecordBatchDisposeColumn.Append(memoryAfterRecordBatchDispose);
+                        managedHeapAfterRecordBatchDisposeColumn.Append(managedHeapAfterRecordBatchDispose);
+                        memoryAfterGcColumn.Append(memoryAfterGc);
+                        managedHeapAfterGcColumn.Append(managedHeapAfterGc);
+                        appStartToLoopEndMemoryColumn.Append(appStartToLoopEndMemory);
+                        appStartToLoopEndManagedHeapColumn.Append(appStartToLoopEndManagedHeap);
+                        appStartToLoopEndMemoryPercentColumn.Append(appStartToLoopEndMemoryPercentageGrowth);
+                        appStartToLoopEndManagedHeapPercentColumn.Append(appStartToLoopEndManagedHeapPercentageGrowth);
+                    }
                 }
             });
+
+            var dataFrame = new DataFrame(
+                threadColumn,
+                loopColumn,
+                numRowsColumn,
+                memoryBeforeRecordBatchCreateColumn,
+                managedHeapBeforeRecordBatchCreateColumn,
+                memoryAfterRecordBatchCreateColumn,
+                managedHeapAfterRecordBatchCreateColumn,
+                memoryAfterRecordBatchDisposeColumn,
+                managedHeapAfterRecordBatchDisposeColumn,
+                memoryAfterGcColumn,
+                managedHeapAfterGcColumn,
+                appStartToLoopEndMemoryColumn,
+                appStartToLoopEndManagedHeapColumn,
+                appStartToLoopEndMemoryPercentColumn,
+                appStartToLoopEndManagedHeapPercentColumn
+            );
+            Console.WriteLine(dataFrame.ToMarkdown());
         }
 
         private static class ProcessMemoryProfiler

@@ -4,8 +4,8 @@
       "commandName": "Project",
       "environmentVariables": {
         "NUM_ROWS": "5000000",
-        "NUM_LOOPS": "50",
-        "NUM_THREADS": "1",
+        "NUM_LOOPS": "5",
+        "NUM_THREADS": "3",
         "NUM_CHARS_IN_WRITTEN_COLUMN": "30"
       }
     }

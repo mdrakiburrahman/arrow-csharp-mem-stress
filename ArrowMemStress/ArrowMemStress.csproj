@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" Version="17.0.0" />
+    <PackageReference Include="Microsoft.Data.Analysis" Version="0.21.1" />
   </ItemGroup>
 
 </Project>
