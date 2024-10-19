@@ -24,7 +24,7 @@
             string storageAccountName = (Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? "someaccount");
             string storageContainerName = (Environment.GetEnvironmentVariable("STORAGE_CONTAINER_NAME") ?? "somecontainer");
             string storageAccountRelativePath = (Environment.GetEnvironmentVariable("STORAGE_TABLE_RELATIVE_PATH") ?? "some/path/table");
-            bool writeDelta = bool.Parse(Environment.GetEnvironmentVariable("WRITE_DELTA") ?? "true");
+            bool writeDelta = bool.Parse(Environment.GetEnvironmentVariable("WRITE_TO_DELTA") ?? "true");
             Random randomValueGenerator = new ();
 
             ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
