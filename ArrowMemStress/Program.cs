@@ -33,32 +33,29 @@
             var threadColumn = new PrimitiveDataFrameColumn<int>("Thread #");
             var loopColumn = new PrimitiveDataFrameColumn<int>("Loop #");
             var numRowsColumn = new PrimitiveDataFrameColumn<int>("Number of Rows");
-            var memoryBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory Before RecordBatch Create");
-            var managedHeapBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Before RecordBatch Create");
-            var memoryAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Create");
-            var managedHeapAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Create");
-            var memoryAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Memory After Delta Write");
-            var managedHeapAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After Delta Write");
-            var memoryAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Dispose");
-            var managedHeapAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Dispose");
-            var memoryAfterGcColumn = new PrimitiveDataFrameColumn<long>("Memory After GC");
-            var managedHeapAfterGcColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After GC");
-            var appStartToLoopEndMemoryColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End Diff");
-            var appStartToLoopEndManagedHeapColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End Diff");
-            var appStartToLoopEndMemoryPercentColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End %");
-            var appStartToLoopEndManagedHeapPercentColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End %");
+            var memoryBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory Before RecordBatch Create (MB)");
+            var managedHeapBeforeRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Before RecordBatch Create (MB)");
+            var memoryAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Create (MB)");
+            var managedHeapAfterRecordBatchCreateColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Create (MB)");
+            var memoryAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Memory After Delta Write (MB)");
+            var managedHeapAfterDeltaWriteColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After Delta Write (MB)");
+            var memoryAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Memory After RecordBatch Dispose (MB)");
+            var managedHeapAfterRecordBatchDisposeColumn = new PrimitiveDataFrameColumn<long>("Managed Heap After RecordBatch Dispose (MB)");
+            var appStartToLoopEndMemoryColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End Diff (MB)");
+            var appStartToLoopEndManagedHeapColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End Diff (MB)");
+            var appStartToLoopEndMemoryPercentColumn = new PrimitiveDataFrameColumn<long>("Memory Start and End (%)");
+            var appStartToLoopEndManagedHeapPercentColumn = new PrimitiveDataFrameColumn<long>("Managed Heap Start and End (%)");
 
             Random randomValueGenerator = new ();
             ThreadSafeDeltaTableClient threadSafeDeltaTableClient = new ThreadSafeDeltaTableClient(storageAccountName, storageContainerName, storageAccountRelativePath, schema);
             NativeMemoryAllocator memoryAllocator = new(alignment: 64);
+            string[] stringArray = Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)).ToArray();
 
             Parallel.For(0, numThreads, t =>
             {
                 for (int i = 0; i < numLoops; i++)
                 {
                     Console.WriteLine($"[ Thread {t + 1} of {numThreads} ] Loop {i + 1} of {numLoops}");
-
-                    string[] stringArray = Enumerable.Range(0, numRows).Select(_ => GenerateRandomString(randomValueGenerator, stringLength)).ToArray();
 
                     long memoryBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportInMb();
                     long managedHeapBeforeRecordBatchCreate = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
@@ -91,16 +88,9 @@
                     // 2. After disposing RecordBatch
                     foreach (RecordBatch recordBatch in outgoingBatches) recordBatch.Dispose();
                     recordBatchBuilder.Clear();
-                    stringArray = null;
 
                     long memoryAfterRecordBatchDispose = ProcessMemoryProfiler.ReportInMb();
                     long managedHeapAfterRecordBatchDispose = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
-
-                    // 3. After forcing GC
-                    GC.Collect(generation: GC.MaxGeneration, mode: GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-                    long memoryAfterGc = ProcessMemoryProfiler.ReportInMb();
-                    long managedHeapAfterGc = ProcessMemoryProfiler.ReportManagedHeapLiveObjectsInMb();
 
                     // Diffs
                     long memoryRecordBatchActual = memoryAfterRecordBatchCreate - memoryBeforeRecordBatchCreate;
@@ -109,11 +99,8 @@
                     long disposedMemoryInMb = memoryAfterRecordBatchDispose - memoryAfterRecordBatchCreate;
                     long disposedManagedHeapInMb = managedHeapAfterRecordBatchDispose - managedHeapAfterRecordBatchCreate;
 
-                    long memorySavedAfterGc = memoryAfterGc - memoryAfterRecordBatchDispose;
-                    long managedHeapSavedAfterGc = managedHeapAfterRecordBatchDispose - managedHeapAfterGc;
-
-                    long appStartToLoopEndMemory = memoryAfterGc - memoryBeforeRecordBatchCreate;
-                    long appStartToLoopEndManagedHeap = managedHeapAfterGc - managedHeapBeforeRecordBatchCreate;
+                    long appStartToLoopEndMemory = memoryAfterRecordBatchDispose - memoryBeforeRecordBatchCreate;
+                    long appStartToLoopEndManagedHeap = managedHeapAfterRecordBatchDispose - managedHeapBeforeRecordBatchCreate;
 
                     long appStartToLoopEndMemoryPercentageGrowth = (appStartToLoopEndMemory * 100 / memoryBeforeRecordBatchCreate);
                     long appStartToLoopEndManagedHeapPercentageGrowth = (appStartToLoopEndManagedHeap * 100 / managedHeapBeforeRecordBatchCreate);
@@ -133,8 +120,6 @@
                         managedHeapAfterDeltaWriteColumn.Append(managedHeapAfterDeltaWrite);
                         memoryAfterRecordBatchDisposeColumn.Append(memoryAfterRecordBatchDispose);
                         managedHeapAfterRecordBatchDisposeColumn.Append(managedHeapAfterRecordBatchDispose);
-                        memoryAfterGcColumn.Append(memoryAfterGc);
-                        managedHeapAfterGcColumn.Append(managedHeapAfterGc);
                         appStartToLoopEndMemoryColumn.Append(appStartToLoopEndMemory);
                         appStartToLoopEndManagedHeapColumn.Append(appStartToLoopEndManagedHeap);
                         appStartToLoopEndMemoryPercentColumn.Append(appStartToLoopEndMemoryPercentageGrowth);
@@ -155,8 +140,6 @@
                 managedHeapAfterDeltaWriteColumn,
                 memoryAfterRecordBatchDisposeColumn,
                 managedHeapAfterRecordBatchDisposeColumn,
-                memoryAfterGcColumn,
-                managedHeapAfterGcColumn,
                 appStartToLoopEndMemoryColumn,
                 appStartToLoopEndManagedHeapColumn,
                 appStartToLoopEndMemoryPercentColumn,
