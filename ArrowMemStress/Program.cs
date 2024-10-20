@@ -29,6 +29,7 @@
             string storageAccountName = (Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? "someaccount");
             string storageContainerName = (Environment.GetEnvironmentVariable("STORAGE_CONTAINER_NAME") ?? "somecontainer");
             string storageAccountRelativePath = (Environment.GetEnvironmentVariable("STORAGE_TABLE_RELATIVE_PATH") ?? "some/path/table");
+            bool sleepWhenDone = bool.Parse(Environment.GetEnvironmentVariable("SLEEP_WHEN_DONE") ?? "false");
 
             var threadColumn = new PrimitiveDataFrameColumn<int>("Thread #");
             var loopColumn = new PrimitiveDataFrameColumn<int>("Loop #");
@@ -146,6 +147,11 @@
                 appStartToLoopEndManagedHeapPercentColumn
             );
             Console.WriteLine(dataFrame.ToMarkdown());
+
+            if (sleepWhenDone)
+            {
+                Thread.Sleep(Timeout.Infinite);
+            }
         }
 
         private static class ProcessMemoryProfiler
