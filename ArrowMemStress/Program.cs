@@ -150,8 +150,17 @@
 
         private static class ProcessMemoryProfiler
         {
-            internal static long ReportInMb() => Process.GetCurrentProcess().WorkingSet64 / 1024 / 1024;
-            internal static long ReportManagedHeapLiveObjectsInMb() => GC.GetTotalMemory(false) / 1024 / 1024;
+            internal static long ReportInMb()
+            {
+                long memoryInMb = Process.GetCurrentProcess().WorkingSet64 / 1024 / 1024;
+                return memoryInMb == 0 ? -1 : memoryInMb;
+            }
+
+            internal static long ReportManagedHeapLiveObjectsInMb()
+            {
+                long managedHeapInMb = GC.GetTotalMemory(false) / 1024 / 1024;
+                return managedHeapInMb == 0 ? -1 : managedHeapInMb;
+            }
         }
 
         private static string GenerateRandomString(Random random, int length = 10) => new string(Enumerable.Repeat(alphabets, length).Select(s => s[random.Next(s.Length)]).ToArray());
